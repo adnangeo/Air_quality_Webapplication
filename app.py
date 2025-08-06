@@ -5,11 +5,23 @@ import os
 import json
 from datetime import date
 
-# Authenticate with service account
+import streamlit as st
+import ee
+import os
+import json
+import tempfile
+
 service_account = os.environ["GEE_SERVICE_ACCOUNT"]
 key_data = json.loads(os.environ["GEE_PRIVATE_KEY_JSON"])
-credentials = ee.ServiceAccountCredentials(service_account, key_data)
+
+# Write to temp file and authenticate
+with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as temp_key_file:
+    temp_key_file.write(json.dumps(key_data))
+    temp_key_path = temp_key_file.name
+
+credentials = ee.ServiceAccountCredentials(service_account, temp_key_path)
 ee.Initialize(credentials)
+
 
 # App title
 st.set_page_config(layout="wide")
