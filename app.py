@@ -1,68 +1,68 @@
 import streamlit as st
-import geemap.foliumap as geemap
 import ee
-import datetime
+import geemap.foliumap as geemap
+import json
+import os
 
-# Earth Engine authentication
-ee.Authenticate()
-ee.Initialize(project='ee-syedadnanbukhari63')
-
-# Streamlit layout
 st.set_page_config(layout="wide")
-st.title("🌫️ Air Quality + Population Dashboard (Sentinel-5P + LandScan)")
+st.title("🌍 Air Quality & Population Explorer (Sentinel-5P + LandScan)")
 
-# Sidebar controls
-pollutant = st.sidebar.selectbox("Pollutant", ['NO2', 'SO2', 'CO', 'Aerosol Index'])
-start_date = st.sidebar.date_input("Start Date", datetime.date(2022, 1, 1))
-end_date = st.sidebar.date_input("End Date", datetime.date(2022, 1, 10))
-show_population = st.sidebar.checkbox("Show LandScan Population", value=True)
-buffer_km = st.sidebar.slider("Buffer (km) for Point", 1, 50, 10)
+# Authenticate with Earth Engine using service account
+credentials = ee.ServiceAccountCredentials(
+    os.environ["GEE_SERVICE_ACCOUNT"],
+    key_data=json.loads(os.environ["GEE_PRIVATE_KEY"])
+)
+ee.Initialize(credentials)
 
-dataset_dict = {
-    "NO2": ("COPERNICUS/S5P/OFFL/L3_NO2", "tropospheric_NO2_column_number_density", 0.0005),
-    "SO2": ("COPERNICUS/S5P/OFFL/L3_SO2", "SO2_column_number_density", 0.0005),
-    "CO": ("COPERNICUS/S5P/OFFL/L3_CO", "CO_column_number_density", 0.05),
-    "Aerosol Index": ("COPERNICUS/S5P/OFFL/L3_AER_AI", "absorbing_aerosol_index", 2),
+# UI inputs
+col1, col2 = st.columns(2)
+with col1:
+    pollutant = st.selectbox("Select pollutant", ["NO2", "SO2", "CO", "Aerosol"])
+with col2:
+    vis_type = st.radio("Visualization", ["Daily", "Monthly Average"])
+
+Map = geemap.Map(center=[20, 78], zoom=4, add_google_map=False)
+Map.add_basemap("HYBRID")
+
+# Pollutant collection mapping
+pollutants = {
+    "NO2": {
+        "collection": "COPERNICUS/S5P/OFFL/L3_NO2",
+        "band": "NO2_column_number_density",
+        "vis": {"min": 0, "max": 0.0002, "palette": ["black", "purple", "blue", "cyan", "green", "yellow", "red"]},
+    },
+    "SO2": {
+        "collection": "COPERNICUS/S5P/OFFL/L3_SO2",
+        "band": "SO2_column_number_density",
+        "vis": {"min": 0, "max": 0.0005, "palette": ["black", "blue", "green", "yellow", "red"]},
+    },
+    "CO": {
+        "collection": "COPERNICUS/S5P/OFFL/L3_CO",
+        "band": "CO_column_number_density",
+        "vis": {"min": 0, "max": 0.05, "palette": ["black", "blue", "green", "yellow", "red"]},
+    },
+    "Aerosol": {
+        "collection": "COPERNICUS/S5P/OFFL/L3_AER_AI",
+        "band": "absorbing_aerosol_index",
+        "vis": {"min": 0, "max": 2, "palette": ["black", "purple", "blue", "cyan", "green", "yellow", "red"]},
+    }
 }
-collection_id, band_name, max_vis = dataset_dict[pollutant]
 
-# Draw map
-st.subheader("🗺️ Draw AOI on Map (Point, Rectangle, Polygon)")
-Map = geemap.Map(center=[20, 78], zoom=4)
-Map.add_basemap("SATELLITE")
-Map.add_draw_control()
-Map.to_streamlit()
+# Add selected pollutant layer
+info = pollutants[pollutant]
+collection = ee.ImageCollection(info["collection"]).select(info["band"])
 
-if "aoi" not in st.session_state:
-    st.session_state.aoi = None
+if vis_type == "Daily":
+    image = collection.sort("system:time_start", False).first()
+    Map.addLayer(image, info["vis"], f"{pollutant} Latest")
+else:
+    image = collection.filterDate("2023-01-01", "2023-12-31").mean()
+    Map.addLayer(image, info["vis"], f"{pollutant} Monthly Avg (2023)")
 
-if st.button("✅ Submit AOI"):
-    drawn = Map.user_roi
-    if drawn:
-        geom_type = drawn.geometry().type().getInfo()
-        st.success(f"{geom_type} selected")
-        if geom_type == 'Point':
-            geom = drawn.buffer(buffer_km * 1000).bounds()
-        else:
-            geom = drawn.geometry().bounds()
-        st.session_state.aoi = geom
-    else:
-        st.warning("No geometry drawn")
+# Add LandScan population
+landscan = ee.ImageCollection("projects/sat-io/open-datasets/ORNL/LANDSCAN_GLOBAL")
+latest_pop = landscan.sort("system:time_start", False).first()
+Map.addLayer(latest_pop, {"min": 0, "max": 5000, "palette": ["white", "orange", "red", "black"]}, "Population")
 
-# If AOI exists, process data
-if st.session_state.aoi:
-    aoi = ee.Geometry(st.session_state.aoi)
-
-    ic = ee.ImageCollection(collection_id).select(band_name).filterDate(str(start_date), str(end_date)).filterBounds(aoi)
-    mean_img = ic.mean().clip(aoi)
-
-    map2 = geemap.Map()
-    map2.addLayer(mean_img, {"min": 0, "max": max_vis, "palette": ["white", "blue", "purple"]}, f"{pollutant} Mean")
-
-    if show_population:
-        pop = ee.ImageCollection("projects/sat-io/open-datasets/ORNL/LANDSCAN_GLOBAL").sort("system:time_start", False).first()
-        pop_vis = {"min": 0, "max": 2000, "palette": ['white', 'orange', 'red']}
-        map2.addLayer(pop.clip(aoi).visualize(**pop_vis), {}, "LandScan Population")
-
-    map2.centerObject(aoi, 8)
-    map2.to_streamlit(height=500)
+Map.addLayerControl()
+Map.to_streamlit(width=1200, height=600)
